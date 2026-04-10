@@ -1,218 +1,195 @@
-import { useFrame } from "@react-three/fiber/native";
-import { useEffect, useRef, useState } from "react";
+import { RigidBody } from "@react-three/rapier";
+import { useEffect, useRef } from "react";
 import * as THREE from "three";
 
-// FIXED: Proper face rotations that ensure dice sit flat
-const faceRotations: Record<number, [number, number, number]> = {
-  1: [0, 0, 0], // Top face
-  2: [Math.PI / 2, 0, 0], // Front face
-  3: [0, 0, -Math.PI / 2], // Right face
-  4: [0, 0, Math.PI / 2], // Left face
-  5: [-Math.PI / 2, 0, 0], // Back face
-  6: [Math.PI, 0, 0], // Bottom face
-};
+const FACE_NORMALS: [number, THREE.Vector3][] = [
+  [1, new THREE.Vector3(0, 1, 0)],
+  [6, new THREE.Vector3(0, -1, 0)],
+  [2, new THREE.Vector3(-1, 0, 0)],
+  [5, new THREE.Vector3(1, 0, 0)],
+  [3, new THREE.Vector3(0, 0, 1)],
+  [4, new THREE.Vector3(0, 0, -1)],
+];
 
-// Create traditional dice with dots
-function createDiceMaterial() {
-  for (let face = 1; face <= 6; face++) {
-    const canvas = document.createElement("canvas"); // 🔥 HERE
+const FACE_SLOT_TO_VALUE = [5, 2, 1, 6, 3, 4];
+
+function createMaterials() {
+  const dotMap: Record<number, [number, number][]> = {
+    1: [[128, 128]],
+    2: [
+      [72, 72],
+      [184, 184],
+    ],
+    3: [
+      [72, 72],
+      [128, 128],
+      [184, 184],
+    ],
+    4: [
+      [72, 72],
+      [184, 72],
+      [72, 184],
+      [184, 184],
+    ],
+    5: [
+      [72, 72],
+      [184, 72],
+      [128, 128],
+      [72, 184],
+      [184, 184],
+    ],
+    6: [
+      [72, 72],
+      [184, 72],
+      [72, 128],
+      [184, 128],
+      [72, 184],
+      [184, 184],
+    ],
+  };
+
+  return FACE_SLOT_TO_VALUE.map((value) => {
+    const canvas = document.createElement("canvas");
     canvas.width = 256;
     canvas.height = 256;
     const ctx = canvas.getContext("2d")!;
 
-    const dotPositions: Record<number, { x: number; y: number }[]> = {
-      1: [{ x: 0.5, y: 0.5 }],
-      2: [
-        { x: 0.25, y: 0.25 },
-        { x: 0.75, y: 0.75 },
-      ],
-      3: [
-        { x: 0.25, y: 0.25 },
-        { x: 0.5, y: 0.5 },
-        { x: 0.75, y: 0.75 },
-      ],
-      4: [
-        { x: 0.25, y: 0.25 },
-        { x: 0.75, y: 0.25 },
-        { x: 0.25, y: 0.75 },
-        { x: 0.75, y: 0.75 },
-      ],
-      5: [
-        { x: 0.25, y: 0.25 },
-        { x: 0.75, y: 0.25 },
-        { x: 0.5, y: 0.5 },
-        { x: 0.25, y: 0.75 },
-        { x: 0.75, y: 0.75 },
-      ],
-      6: [
-        { x: 0.25, y: 0.25 },
-        { x: 0.75, y: 0.25 },
-        { x: 0.25, y: 0.5 },
-        { x: 0.75, y: 0.5 },
-        { x: 0.25, y: 0.75 },
-        { x: 0.75, y: 0.75 },
-      ],
-    };
+    const r = 36;
+    ctx.beginPath();
+    ctx.moveTo(r, 0);
+    ctx.lineTo(256 - r, 0);
+    ctx.quadraticCurveTo(256, 0, 256, r);
+    ctx.lineTo(256, 256 - r);
+    ctx.quadraticCurveTo(256, 256, 256 - r, 256);
+    ctx.lineTo(r, 256);
+    ctx.quadraticCurveTo(0, 256, 0, 256 - r);
+    ctx.lineTo(0, r);
+    ctx.quadraticCurveTo(0, 0, r, 0);
+    ctx.closePath();
+    ctx.clip();
 
-    const materials: THREE.MeshStandardMaterial[] = [];
+    ctx.fillStyle = "#f9f4ea";
+    ctx.fillRect(0, 0, 256, 256);
 
-    for (let face = 1; face <= 6; face++) {
-      ctx.fillStyle = "#2d7a3e"; // Green
-      ctx.fillRect(0, 0, 256, 256);
+    ctx.strokeStyle = "#d4c9b0";
+    ctx.lineWidth = 8;
+    ctx.stroke();
 
-      // Draw white dots
-      ctx.fillStyle = "white";
-      const dots = dotPositions[face];
-      dots.forEach((dot) => {
-        ctx.beginPath();
-        ctx.arc(dot.x * 256, dot.y * 256, 18, 0, Math.PI * 2);
-        ctx.fill();
-      });
+    ctx.fillStyle = value === 1 ? "#c0392b" : "#1a1a2e";
+    dotMap[value].forEach(([x, y]) => {
+      ctx.beginPath();
+      ctx.arc(x, y, 22, 0, Math.PI * 2);
+      ctx.fill();
+    });
 
-      const texture = new THREE.CanvasTexture(canvas);
-      materials.push(
-        new THREE.MeshStandardMaterial({
-          map: texture,
-          roughness: 0.7,
-          metalness: 0.1,
-        }),
-      );
+    const texture = new THREE.CanvasTexture(canvas);
+    return new THREE.MeshStandardMaterial({
+      map: texture,
+      roughness: 0.35,
+      metalness: 0.05,
+    });
+  });
+}
+
+function detectFaceUp(q: THREE.Quaternion): number {
+  const worldUp = new THREE.Vector3(0, 1, 0);
+  let bestValue = 1;
+  let bestDot = -Infinity;
+  for (const [value, localNormal] of FACE_NORMALS) {
+    const dot = localNormal.clone().applyQuaternion(q).dot(worldUp);
+    if (dot > bestDot) {
+      bestDot = dot;
+      bestValue = value;
     }
-
-    return materials;
   }
+  return bestValue;
 }
 
 interface DiceProps {
-  rollTrigger: boolean | number;
-  targetValue?: number;
+  trigger: number;
   position: [number, number, number];
   onLanded?: (value: number) => void;
 }
 
-export default function Dice({
-  rollTrigger,
-  targetValue,
-  position,
-  onLanded,
-}: DiceProps) {
-  const ref = useRef<THREE.Mesh>(null);
-  const [rolling, setRolling] = useState(false);
-  // const [velocity, setVelocity] = useState({ x: 0, y: 0, z: 0 });
-  // const [angularVelocity, setAngularVelocity] = useState({ x: 0, y: 0, z: 0 });
-  const velocity = useRef({ x: 0, y: 0, z: 0 });
-  const angularVelocity = useRef({ x: 0, y: 0, z: 0 });
-  const [currentPosition, setCurrentPosition] = useState({
-    x: position[0],
-    y: position[1],
-    z: position[2],
-  });
-  const [target, setTarget] = useState(1);
-  const [materials] = useState(() => createDiceMaterial());
-  const [hasLanded, setHasLanded] = useState(false);
-
-  const gravity = -0.01;
-  const damping = 0.98; // Air resistance
-  const bounceDamping = 0.5; // Energy loss on bounce
-  const angularDamping = 0.95; // Rotation slowdown
+export default function Dice({ trigger, position, onLanded }: DiceProps) {
+  const rigidRef = useRef<any>(null);
+  const meshRef = useRef<THREE.Mesh>(null);
+  const materials = useRef(createMaterials()).current;
+  const prevTrigger = useRef(0);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reported = useRef(false);
 
   useEffect(() => {
-    setRolling(true);
-    setHasLanded(false);
+    if (trigger === 0 || trigger === prevTrigger.current) return;
+    prevTrigger.current = trigger;
+    reported.current = false;
+    if (!rigidRef.current) return;
 
-    const finalValue = targetValue || Math.floor(Math.random() * 6) + 1;
-    setTarget(finalValue);
+    // Reset to center-ish spawn with slight offset
+    rigidRef.current.setTranslation(
+      { x: position[0], y: position[1], z: position[2] },
+      true,
+    );
+    const q = new THREE.Quaternion().setFromEuler(
+      new THREE.Euler(
+        Math.random() * Math.PI * 2,
+        Math.random() * Math.PI * 2,
+        Math.random() * Math.PI * 2,
+      ),
+    );
+    rigidRef.current.setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }, true);
 
-    velocity.current = {
-      x: (Math.random() - 0.5) * 0.05, // small side variation
-      y: 0.25, // smaller upward force
-      z: -1.35 - Math.random() * 2, // 🔥 STRONG forward throw
-    };
+    // Random direction on XZ plane — will bounce off all 4 screen-edge walls
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 9 + Math.random() * 5;
+    rigidRef.current.setLinvel(
+      {
+        x: Math.cos(angle) * speed,
+        y: 5 + Math.random() * 3, // toss upward, gravity brings it back
+        z: Math.sin(angle) * speed,
+      },
+      true,
+    );
+    rigidRef.current.setAngvel(
+      {
+        x: (Math.random() - 0.5) * 35,
+        y: (Math.random() - 0.5) * 35,
+        z: (Math.random() - 0.5) * 35,
+      },
+      true,
+    );
 
-    angularVelocity.current = {
-      x: (Math.random() - 0.5) * 0.4,
-      y: (Math.random() - 0.5) * 0.4,
-      z: (Math.random() - 0.5) * 0.4,
-    };
-  }, [rollTrigger]);
-
-  useFrame(() => {
-    if (!ref.current) return;
-
-    if (rolling) {
-      // 🎲 APPLY ROTATION
-      ref.current.rotation.x += angularVelocity.current.x;
-      ref.current.rotation.y += angularVelocity.current.y;
-      ref.current.rotation.z += angularVelocity.current.z;
-
-      // 💥 APPLY DAMPING + GRAVITY (THIS IS WHAT YOU ASKED)
-      angularVelocity.current.x *= 0.96;
-      angularVelocity.current.y *= 0.96;
-      angularVelocity.current.z *= 0.96;
-
-      velocity.current.x *= 0.98;
-      velocity.current.z *= 0.98;
-      velocity.current.y += gravity;
-
-      // 📍 UPDATE POSITION
-      const pos = ref.current.position;
-
-      pos.x = THREE.MathUtils.clamp(
-        pos.x + velocity.current.x,
-        position[0] - 0.8,
-        position[0] + 0.8,
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => {
+      if (reported.current || !rigidRef.current) return;
+      reported.current = true;
+      const rot = rigidRef.current.rotation();
+      onLanded?.(
+        detectFaceUp(new THREE.Quaternion(rot.x, rot.y, rot.z, rot.w)),
       );
+    }, 3800);
 
-      pos.y = Math.max(0.5, pos.y + velocity.current.y);
-
-      pos.z = THREE.MathUtils.clamp(
-        pos.z + velocity.current.z,
-        position[2] - 2.8,
-        position[2] + 40.8,
-      );
-
-      const WALL_Z = -4; // adjust based on screen
-
-      if (pos.z <= WALL_Z) {
-        pos.z = WALL_Z;
-
-        // bounce back slightly
-        velocity.current.z = -velocity.current.z * 0.4;
-
-        // reduce energy
-        velocity.current.y *= 0.8;
-      }
-
-      // 🪂 BOUNCE
-      if (pos.y <= 0.5 && velocity.current.y < 0) {
-        velocity.current.y = -velocity.current.y * 0.5;
-      }
-
-      // 🎯 STOP CONDITION (IMPORTANT)
-      if (pos.y <= 0.5 && Math.abs(velocity.current.y) < 0.01) {
-        velocity.current = { x: 0, y: 0, z: 0 };
-        angularVelocity.current = { x: 0, y: 0, z: 0 };
-
-        const [x, y, z] = faceRotations[target];
-
-        ref.current.rotation.set(x, y, z);
-        ref.current.position.y = 0.5; // only fix height
-        setRolling(false);
-
-        if (!hasLanded) {
-          setHasLanded(true);
-          onLanded?.(target);
-        }
-      }
-    }
-  });
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
+  }, [trigger]);
 
   return (
-    <mesh ref={ref} position={position} scale={1} castShadow receiveShadow>
-      <boxGeometry args={[1, 1, 1]} />
-      {materials!.map((mat, i) => (
-        <primitive object={mat} attach={`material-${i}`} key={i} />
-      ))}
-    </mesh>
+    <RigidBody
+      ref={rigidRef}
+      colliders="cuboid"
+      restitution={0.6}
+      friction={0.5}
+      linearDamping={0.35}
+      angularDamping={0.3}
+      position={position}
+    >
+      <mesh ref={meshRef} castShadow receiveShadow>
+        <boxGeometry args={[1, 1, 1]} />
+        {materials.map((mat, i) => (
+          <primitive object={mat} attach={`material-${i}`} key={i} />
+        ))}
+      </mesh>
+    </RigidBody>
   );
 }
